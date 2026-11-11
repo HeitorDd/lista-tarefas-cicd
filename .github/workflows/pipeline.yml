@@ -53,8 +53,20 @@ jobs:
 
       - name: Scan de vulnerabilidades da imagem (ECR)
         run: |
-          if ! aws ecr wait image-scan-complete --repository-name "$ECR_REPOSITORY" --image-id imageTag="$IMAGE_TAG"; then
-            echo "::warning::O scan do ECR nao terminou; seguindo sem o resultado."
+          # O scan comeca alguns segundos depois do push; espera ate 5 minutos pelo resultado
+          status="AGUARDANDO"
+          for tentativa in $(seq 1 30); do
+            status=$(aws ecr describe-image-scan-findings --repository-name "$ECR_REPOSITORY" \
+              --image-id imageTag="$IMAGE_TAG" --query 'imageScanStatus.status' --output text 2>/dev/null || echo "AGUARDANDO")
+            echo "Tentativa $tentativa: status do scan = $status"
+            case "$status" in
+              COMPLETE) break ;;
+              FAILED|UNSUPPORTED_IMAGE) break ;;
+            esac
+            sleep 10
+          done
+          if [ "$status" != "COMPLETE" ]; then
+            echo "::warning::O scan do ECR nao terminou (status: $status); seguindo sem o resultado."
             exit 0
           fi
           contagem=$(aws ecr describe-image-scan-findings --repository-name "$ECR_REPOSITORY" \
