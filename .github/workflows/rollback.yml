@@ -1,0 +1,29 @@
+# Rollback (ou promocao manual): publica a imagem de um commit especifico em um ambiente.
+# Rodar em: GitHub > Actions > Rollback > Run workflow
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      ambiente:
+        description: "Ambiente"
+        type: choice
+        options: [dev, hml, prd]
+        required: true
+      sha:
+        description: "Commit completo (40 caracteres) da versao a publicar"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  rollback:
+    name: Rollback
+    uses: ./.github/workflows/deploy.yml
+    with:
+      ambiente: ${{ inputs.ambiente }}
+      ambiente_github: ${{ fromJSON('{"dev":"dev","hml":"homologacao","prd":"producao"}')[inputs.ambiente] }}
+      sha: ${{ inputs.sha }}

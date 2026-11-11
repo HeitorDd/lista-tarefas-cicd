@@ -1,0 +1,106 @@
+# Deploy reutilizavel: promove uma imagem (pelo commit) para um ambiente.
+# Usado pelo pipeline e pelo rollback.
+name: Deploy
+
+on:
+  workflow_call:
+    inputs:
+      ambiente:
+        description: "dev, hml ou prd"
+        type: string
+        required: true
+      ambiente_github:
+        description: "Nome do Environment no GitHub (dev, homologacao, producao)"
+        type: string
+        required: true
+      sha:
+        description: "Commit (tag da imagem) a publicar"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: ${{ inputs.ambiente_github }}
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.ambiente_github }}
+      url: ${{ steps.smoke.outputs.url }}
+    concurrency:
+      group: deploy-${{ inputs.ambiente }}
+      cancel-in-progress: false
+    env:
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      SERVICO: ${{ vars.ECR_REPOSITORY }}-${{ inputs.ambiente }}
+      AMBIENTE: ${{ inputs.ambiente }}
+      SHA: ${{ inputs.sha }}
+    steps:
+      - name: Entrar na AWS (OIDC, sem chave guardada)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login no ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Promover a imagem para o ambiente
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          # A tag do ambiente (dev/hml/prd) passa a apontar para a imagem deste commit
+          docker buildx imagetools create \
+            --tag "$REGISTRY/$ECR_REPOSITORY:$AMBIENTE" \
+            "$REGISTRY/$ECR_REPOSITORY:$SHA"
+
+      - name: Verificar se o ambiente esta ligado
+        id: status
+        run: |
+          status=$(aws ecs describe-services --cluster default --services "$SERVICO" \
+            --query 'services[0].status' --output text 2>/dev/null || echo "NONE")
+          echo "Status do servico $SERVICO: $status"
+          if [ "$status" = "ACTIVE" ]; then
+            echo "ligado=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ligado=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Ambiente $AMBIENTE desligado. A imagem foi marcada como '$AMBIENTE' e sera usada quando ele for ligado."
+          fi
+
+      - name: Atualizar o servico no ECS
+        if: steps.status.outputs.ligado == 'true'
+        run: |
+          aws ecs update-service --cluster default --service "$SERVICO" \
+            --force-new-deployment --query 'service.deployments[0].rolloutState' --output text
+          echo "Aguardando o servico estabilizar..."
+          if ! aws ecs wait services-stable --cluster default --services "$SERVICO"; then
+            echo "::warning::O servico ainda nao estabilizou; o smoke test vai confirmar a versao no ar."
+          fi
+
+      - name: Smoke test
+        id: smoke
+        if: steps.status.outputs.ligado == 'true'
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+        run: |
+          if [ -z "$APP_URL" ]; then
+            echo "::warning::Variavel APP_URL nao configurada neste ambiente; smoke test pulado."
+            exit 0
+          fi
+          echo "url=$APP_URL" >> "$GITHUB_OUTPUT"
+          for tentativa in $(seq 1 60); do
+            versao=$(curl -fsS "$APP_URL/health" | jq -r '.versao' || true)
+            if [ "$versao" = "$SHA" ]; then
+              echo "Versao nova no ar: $versao"
+              curl -fsS "$APP_URL/api/itens" > /dev/null
+              echo "Banco de dados respondendo."
+              exit 0
+            fi
+            echo "Tentativa $tentativa: versao no ar = '$versao', esperando $SHA"
+            sleep 10
+          done
+          echo "::error::A versao nova nao respondeu no $APP_URL/health."
+          exit 1

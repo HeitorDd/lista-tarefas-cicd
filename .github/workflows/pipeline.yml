@@ -1,0 +1,98 @@
+# Pipeline principal: roda a cada push na main.
+# CI  ->  build + scan da imagem  ->  dev  ->  homologacao  ->  producao (com aprovacao)
+# A imagem e montada UMA vez e a mesma imagem e promovida de ambiente em ambiente.
+name: Pipeline
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: pipeline-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: read
+  id-token: write
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build e scan da imagem
+    needs: ci
+    # So roda depois que o infra/setup.ps1 configurar a ligacao com a AWS
+    if: vars.AWS_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    env:
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      IMAGE_TAG: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Entrar na AWS (OIDC, sem chave guardada)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login no ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build e push da imagem
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          docker build --build-arg APP_VERSION="$IMAGE_TAG" -t "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" .
+          docker push "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+      - name: Scan de vulnerabilidades da imagem (ECR)
+        run: |
+          if ! aws ecr wait image-scan-complete --repository-name "$ECR_REPOSITORY" --image-id imageTag="$IMAGE_TAG"; then
+            echo "::warning::O scan do ECR nao terminou; seguindo sem o resultado."
+            exit 0
+          fi
+          contagem=$(aws ecr describe-image-scan-findings --repository-name "$ECR_REPOSITORY" \
+            --image-id imageTag="$IMAGE_TAG" --query 'imageScanFindings.findingSeverityCounts' --output json)
+          echo "Vulnerabilidades por gravidade: $contagem"
+          criticas=$(echo "$contagem" | jq -r '.CRITICAL // 0')
+          if [ "$criticas" -gt 0 ]; then
+            if [ "${{ vars.SCAN_IGNORAR_CRITICAS }}" = "true" ]; then
+              echo "::warning::$criticas vulnerabilidade(s) CRITICA(s) ignorada(s) por configuracao."
+            else
+              echo "::error::$criticas vulnerabilidade(s) CRITICA(s) na imagem. Deploy bloqueado."
+              exit 1
+            fi
+          fi
+
+  dev:
+    name: Deploy dev
+    needs: build
+    uses: ./.github/workflows/deploy.yml
+    with:
+      ambiente: dev
+      ambiente_github: dev
+      sha: ${{ github.sha }}
+
+  homologacao:
+    name: Deploy homologacao
+    needs: dev
+    uses: ./.github/workflows/deploy.yml
+    with:
+      ambiente: hml
+      ambiente_github: homologacao
+      sha: ${{ github.sha }}
+
+  producao:
+    name: Deploy producao
+    needs: homologacao
+    uses: ./.github/workflows/deploy.yml
+    with:
+      ambiente: prd
+      ambiente_github: producao
+      sha: ${{ github.sha }}

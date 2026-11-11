@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lista de tarefas ({{AMBIENTE}})</title>
+<style>
+  :root {
+    --fundo: #f4f5f7; --cartao: #ffffff; --texto: #1d2330; --suave: #6b7280; --borda: #e3e6eb;
+    --primaria: #2f5bd3; --perigo: #c2362f;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--fundo); color: var(--texto); }
+  .faixa { padding: 8px 16px; font-size: .85rem; font-weight: 600; letter-spacing: .04em; color: #fff; display: flex; justify-content: space-between; }
+  .faixa.dev { background: #2e7d4f; }
+  .faixa.hml { background: #b26a00; }
+  .faixa.prd { background: #a12a24; }
+  .faixa.local { background: #4b5563; }
+  main { max-width: 560px; margin: 48px auto; padding: 0 16px; }
+  h1 { font-size: 1.6rem; margin-bottom: 4px; }
+  .sub { color: var(--suave); margin-bottom: 24px; }
+  form { display: flex; gap: 8px; margin-bottom: 20px; }
+  input { flex: 1; padding: 12px 14px; border: 1px solid var(--borda); border-radius: 8px; font-size: 1rem; background: var(--cartao); }
+  input:focus { outline: 2px solid var(--primaria); border-color: transparent; }
+  button { border: 0; border-radius: 8px; cursor: pointer; font-size: .95rem; }
+  .adicionar { padding: 0 18px; background: var(--primaria); color: #fff; font-weight: 600; }
+  ul { list-style: none; background: var(--cartao); border: 1px solid var(--borda); border-radius: 10px; overflow: hidden; }
+  li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-top: 1px solid var(--borda); }
+  li:first-child { border-top: 0; }
+  .remover { background: transparent; color: var(--perigo); padding: 6px 10px; }
+  .remover:hover { background: #fbeceb; }
+  .vazio { color: var(--suave); text-align: center; padding: 24px; }
+  .erro { color: var(--perigo); margin-bottom: 12px; min-height: 1.2em; font-size: .9rem; }
+</style>
+</head>
+<body>
+  <div class="faixa {{AMBIENTE}}">
+    <span id="nome-ambiente">AMBIENTE: {{AMBIENTE}}</span>
+    <span>versão {{VERSAO}}</span>
+  </div>
+  <main>
+    <h1>Lista de tarefas</h1>
+    <p class="sub">Os itens ficam salvos no banco de dados deste ambiente.</p>
+
+    <form id="formulario">
+      <input id="texto" maxlength="200" placeholder="O que precisa ser feito?" autocomplete="off" required>
+      <button class="adicionar" type="submit">Adicionar</button>
+    </form>
+    <p class="erro" id="erro"></p>
+
+    <ul id="lista"><li class="vazio">Carregando...</li></ul>
+  </main>
+
+<script>
+  const nomes = { dev: "DESENVOLVIMENTO", hml: "HOMOLOGAÇÃO", prd: "PRODUÇÃO", local: "LOCAL" };
+  const amb = "{{AMBIENTE}}";
+  document.getElementById("nome-ambiente").textContent = "AMBIENTE: " + (nomes[amb] || amb.toUpperCase());
+
+  const lista = document.getElementById("lista");
+  const erro = document.getElementById("erro");
+
+  function mostrarErro(msg) { erro.textContent = msg || ""; }
+
+  async function carregar() {
+    try {
+      const resp = await fetch("/api/itens");
+      if (!resp.ok) throw new Error();
+      desenhar(await resp.json());
+      mostrarErro("");
+    } catch {
+      mostrarErro("Não foi possível carregar a lista.");
+    }
+  }
+
+  function desenhar(itens) {
+    lista.innerHTML = "";
+    if (itens.length === 0) {
+      lista.innerHTML = '<li class="vazio">Nenhuma tarefa ainda.</li>';
+      return;
+    }
+    for (const item of itens) {
+      const li = document.createElement("li");
+      const span = document.createElement("span");
+      span.textContent = item.texto;
+      const botao = document.createElement("button");
+      botao.className = "remover";
+      botao.textContent = "Remover";
+      botao.onclick = () => remover(item.id);
+      li.append(span, botao);
+      lista.append(li);
+    }
+  }
+
+  async function remover(id) {
+    const resp = await fetch("/api/itens/" + encodeURIComponent(id), { method: "DELETE" });
+    if (!resp.ok && resp.status !== 404) mostrarErro("Não foi possível remover.");
+    carregar();
+  }
+
+  document.getElementById("formulario").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const campo = document.getElementById("texto");
+    const texto = campo.value.trim();
+    if (!texto) return;
+    const resp = await fetch("/api/itens", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ texto }),
+    });
+    if (!resp.ok) { mostrarErro("Não foi possível adicionar."); return; }
+    campo.value = "";
+    carregar();
+  });
+
+  carregar();
+</script>
+</body>
+</html>
