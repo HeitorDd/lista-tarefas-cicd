@@ -127,6 +127,23 @@ if ($LASTEXITCODE -ne 0) {
 } else { Ok "provedor OIDC ja existia" }
 
 $roleGitHub = "$App-github-actions"
+
+# O GitHub identifica o repositorio no token OIDC (campo "sub").
+# Repositorios novos (desde jul/2026) usam o formato com IDs fixos: repo:dono@ID/repo@ID:...
+# Repositorios antigos usam o formato so com nomes: repo:dono/repo:...
+# A regra aceita os dois, sempre limitada a main e aos environments deste repositorio.
+$idsGitHub = @(gh api "repos/$Repo" --jq ".owner.id, .id")
+if ($LASTEXITCODE -ne 0 -or $idsGitHub.Count -lt 2) { Falha "Nao consegui ler os IDs do repositorio no GitHub." }
+$dono, $nomeRepo = $Repo.Split("/")
+$repoComIds = "${dono}@$($idsGitHub[0].Trim())/${nomeRepo}@$($idsGitHub[1].Trim())"
+$subPermitidos = @(
+    "repo:${repoComIds}:ref:refs/heads/main",
+    "repo:${repoComIds}:environment:*",
+    "repo:${Repo}:ref:refs/heads/main",
+    "repo:${Repo}:environment:*"
+)
+Ok "identidade do repositorio no OIDC: repo:$repoComIds"
+
 $confiancaGitHub = SalvarJson "confianca-github.json" @{
     Version   = "2012-10-17"
     Statement = @(@{
@@ -136,7 +153,7 @@ $confiancaGitHub = SalvarJson "confianca-github.json" @{
             Condition = @{
                 StringEquals = @{ "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com" }
                 # So a main e os environments DESTE repositorio podem usar a role
-                StringLike   = @{ "token.actions.githubusercontent.com:sub" = @("repo:${Repo}:ref:refs/heads/main", "repo:${Repo}:environment:*") }
+                StringLike   = @{ "token.actions.githubusercontent.com:sub" = $subPermitidos }
             }
         })
 }
