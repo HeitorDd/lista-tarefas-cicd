@@ -1,4 +1,6 @@
-# Lista de tarefas com CI/CD na AWS
+﻿# Lista de tarefas com CI/CD na AWS
+
+![Interface da aplicacao](docs/interface.png)
 
 Aplicação web simples (adicionar e remover tarefas) com banco de dados **Amazon DynamoDB**, publicada em três ambientes na AWS (**desenvolvimento**, **homologação** e **produção**) por um pipeline de **CI/CD no GitHub Actions**.
 
