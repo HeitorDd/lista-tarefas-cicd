@@ -40,6 +40,23 @@ if ($LASTEXITCODE -ne 0) {
     aws ecr put-image-scanning-configuration --repository-name $App --region $Regiao --image-scanning-configuration "scanOnPush=true" | Out-Null
     Ok "ja existia (scan no push garantido)"
 }
+# O scan automatico e controlado por uma regra da CONTA no ECR (a opcao do repositorio nao basta).
+# Adiciona uma regra "scan no push" para este repositorio, mantendo as regras que ja existirem.
+$configScan = aws ecr get-registry-scanning-configuration --region $Regiao --output json | ConvertFrom-Json
+$regrasScan = @($configScan.scanningConfiguration.rules | Where-Object { $_ })
+$jaEscaneia = $regrasScan | Where-Object { $_.scanFrequency -eq "SCAN_ON_PUSH" -and ($_.repositoryFilters.filter -contains $App) }
+if ($jaEscaneia) {
+    Ok "scan de vulnerabilidades no push ja configurado"
+} else {
+    $regrasScan += @{ scanFrequency = "SCAN_ON_PUSH"; repositoryFilters = @(@{ filter = $App; filterType = "WILDCARD" }) }
+    $arquivoRegras = Join-Path $PastaTmp "regras-scan.json"
+    ConvertTo-Json -InputObject $regrasScan -Depth 10 -Compress | Set-Content -Encoding ascii $arquivoRegras
+    aws ecr put-registry-scanning-configuration --region $Regiao `
+        --scan-type $configScan.scanningConfiguration.scanType --rules "file://$arquivoRegras" | Out-Null
+    if ($LASTEXITCODE -ne 0) { Falha "Nao consegui configurar o scan de vulnerabilidades." }
+    Ok "scan de vulnerabilidades no push ligado para $App"
+}
+
 $politicaCiclo = SalvarJson "ecr-ciclo.json" @{
     rules = @(
         @{
